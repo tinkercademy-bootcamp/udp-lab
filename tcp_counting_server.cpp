@@ -112,28 +112,25 @@ public:
             if (strncmp(buffer, "COUNT:", 6) == 0) {
                 int received_count = std::atoi(buffer + 6);
                 
-                if (received_count == current_count && (received_count % max_students) == student_id) {
-                    current_count++;
-                    total_counts++;
-                    
-                    auto now = std::chrono::steady_clock::now();
-                    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_display);
-                    
-                    if (!fast_mode || elapsed.count() >= 500) {
-                        displayProgress(received_count, now);
-                        last_display = now;
-                    }
-                    
-                    if (elapsed.count() < 100 && !fast_mode) {
-                        fast_mode = true;
-                        std::cout << "Switching to fast mode (displaying every 500ms)..." << std::endl;
-                    }
-                    
-                    broadcastCount(received_count, student_id);
-                } else {
-                    std::string error_msg = "INVALID_COUNT:" + std::to_string(current_count);
-                    send(client_socket, error_msg.c_str(), error_msg.length(), 0);
+                // Simplified: Just accept all counts assuming clients collaborate nicely
+                current_count = received_count + 1;
+                total_counts++;
+                
+                auto now = std::chrono::steady_clock::now();
+                auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_display);
+                
+                if (!fast_mode || elapsed.count() >= 500) {
+                    displayProgress(received_count, now);
+                    last_display = now;
                 }
+                
+                if (elapsed.count() < 100 && !fast_mode) {
+                    fast_mode = true;
+                    std::cout << "Switching to fast mode (displaying every 500ms)..." << std::endl;
+                }
+                
+                // Still broadcast to keep all clients in sync
+                broadcastCount(received_count, student_id);
             }
         }
         
@@ -156,7 +153,7 @@ public:
     }
     
     void broadcastCount(int count, int from_student) {
-        std::string message = "ACCEPTED:" + std::to_string(count);
+        std::string message = "COUNT:" + std::to_string(count);
         
         std::lock_guard<std::mutex> lock(clients_mutex);
         if (client_sockets.empty()) {
@@ -179,18 +176,18 @@ public:
             auto now = std::chrono::steady_clock::now();
             auto since_last = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_count_time);
             
-            // Wait 5 seconds before starting the simulation if no one connects
+            // Wait 30 seconds before starting the simulation if no one connects
             if (!started && client_sockets.size() == 0) {
                 auto since_start = std::chrono::duration_cast<std::chrono::seconds>(now - start_time);
-                if (since_start.count() > 5) {
-                    std::cout << "No students connected after 5 seconds. Starting simulation..." << std::endl;
+                if (since_start.count() > 30) {
+                    std::cout << "No students connected after 30 seconds. Starting simulation..." << std::endl;
                     started = true;
                 }
             }
             
-            // Simulate counts after a timeout
-            if ((since_last.count() > 1000 && client_sockets.size() > 0) || 
-                (started && client_sockets.size() == 0 && since_last.count() > 1000)) {
+            // Simulate counts after a timeout (5 seconds)
+            if ((since_last.count() > 5000 && client_sockets.size() > 0) || 
+                (started && client_sockets.size() == 0 && since_last.count() > 5000)) {
                 int expected_student = current_count % max_students;
                 
                 // Check if the expected student is connected
@@ -201,11 +198,12 @@ public:
                 }
                 
                 // Either the student is connected but timed out, or the student isn't connected at all
-                std::cout << std::endl << "Timeout! Simulating count " << current_count 
+                std::cout << std::endl << "5-second timeout! Simulating count " << current_count 
                           << " for student " << expected_student 
                           << (student_connected ? " (connected but timed out)" : " (not connected)") 
                           << std::endl;
                 
+                // Broadcast the simulated count, then increment
                 broadcastCount(current_count, expected_student);
                 current_count++;
                 total_counts++;

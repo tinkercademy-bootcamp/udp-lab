@@ -30,30 +30,66 @@ public:
     }
     
     bool connect() {
-        socket_fd = socket(AF_INET, SOCK_STREAM, 0);
-        if (socket_fd < 0) {
-            perror("Socket creation failed");
+        // Don't create the socket here - we'll create it in the getaddrinfo loop
+        socket_fd = -1;
+        
+        // Use getaddrinfo which handles both IP addresses and hostnames in a more modern way
+        struct addrinfo hints, *server_info, *p;
+        int rv;
+        
+        // Set up hints structure
+        memset(&hints, 0, sizeof hints);
+        hints.ai_family = AF_UNSPEC;     // Use IPv4 or IPv6
+        hints.ai_socktype = SOCK_STREAM; // TCP
+        
+        // Convert port to string
+        std::string port_str = std::to_string(SERVER_PORT);
+        
+        // Get address info
+        std::cout << "Resolving " << server_ip << "..." << std::endl;
+        if ((rv = getaddrinfo(server_ip.c_str(), port_str.c_str(), &hints, &server_info)) != 0) {
+            std::cerr << "getaddrinfo: " << gai_strerror(rv) << std::endl;
             return false;
         }
         
-        struct sockaddr_in server_addr;
-        server_addr.sin_family = AF_INET;
-        server_addr.sin_port = htons(SERVER_PORT);
-        
-        // Try to parse as IP address first
-        if (inet_pton(AF_INET, server_ip.c_str(), &server_addr.sin_addr) <= 0) {
-            // Not a valid IP address, try as hostname
-            struct hostent *he = gethostbyname(server_ip.c_str());
-            if (he == nullptr) {
-                perror("Invalid address or hostname");
-                return false;
+        // Loop through all the results and connect to the first one we can
+        for (p = server_info; p != nullptr; p = p->ai_next) {
+            // Create socket
+            if ((socket_fd = socket(p->ai_family, p->ai_socktype, p->ai_protocol)) == -1) {
+                perror("Client: socket");
+                continue;
             }
-            // Copy the first address
-            memcpy(&server_addr.sin_addr, he->h_addr_list[0], he->h_length);
+            
+            // Set socket timeout
+            struct timeval tv;
+            tv.tv_sec = 5;  // 5 second timeout
+            tv.tv_usec = 0;
+            if (setsockopt(socket_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
+                perror("Socket timeout option");
+                // Continue anyway
+            }
+            
+            std::cout << "Connecting to " << server_ip << ":" << SERVER_PORT << "..." << std::endl;
+            if (::connect(socket_fd, p->ai_addr, p->ai_addrlen) == -1) {
+                close(socket_fd);
+                socket_fd = -1;
+                perror("Client: connect");
+                continue;
+            }
+            
+            break; // If we get here, we connected successfully
         }
         
-        if (::connect(socket_fd, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
-            perror("Connection failed");
+        // Free the server info structure
+        freeaddrinfo(server_info);
+        
+        // Check if we connected to anything
+        if (p == nullptr) {
+            std::cerr << "Failed to connect to " << server_ip << ":" << SERVER_PORT << std::endl;
+            if (socket_fd != -1) {
+                close(socket_fd);
+                socket_fd = -1;
+            }
             return false;
         }
         
@@ -89,18 +125,13 @@ public:
             
             buffer[bytes_received] = '\0';
             
-            if (strncmp(buffer, "ACCEPTED:", 9) == 0) {
-                int accepted_count = std::atoi(buffer + 9);
-                current_count = accepted_count + 1;
+            // Process count broadcasts from the server
+            if (strncmp(buffer, "COUNT:", 6) == 0) {
+                int received_count = std::atoi(buffer + 6);
+                current_count = received_count + 1;
                 
-                std::cout << "Server accepted count: " << accepted_count 
+                std::cout << "Received count: " << received_count 
                           << " (next expected: " << current_count << ")" << std::endl;
-                          
-            } else if (strncmp(buffer, "INVALID_COUNT:", 14) == 0) {
-                int expected_count = std::atoi(buffer + 14);
-                current_count = expected_count;
-                
-                std::cout << "Invalid count sent. Expected: " << expected_count << std::endl;
             }
         }
     }
@@ -112,6 +143,8 @@ public:
             if ((count_to_send % total_students) == student_id) {
                 std::cout << "My turn! Sending count: " << count_to_send << std::endl;
                 sendCount(count_to_send);
+                
+                // No need to increment here - will be updated when we receive the broadcast
                 
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
             } else {
