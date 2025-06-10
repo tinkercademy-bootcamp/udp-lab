@@ -100,6 +100,7 @@ public:
     
     void handleClient(int client_socket, int student_id) {
         char buffer[1024];
+        std::string partial_buffer;
         
         while (running) {
             ssize_t bytes_received = recv(client_socket, buffer, sizeof(buffer) - 1, 0);
@@ -109,28 +110,42 @@ public:
             
             buffer[bytes_received] = '\0';
             
-            if (strncmp(buffer, "COUNT:", 6) == 0) {
-                int received_count = std::atoi(buffer + 6);
+            // Add received data to our partial buffer
+            partial_buffer += buffer;
+            
+            // Process complete lines
+            size_t pos;
+            while ((pos = partial_buffer.find('\n')) != std::string::npos) {
+                // Extract line
+                std::string line = partial_buffer.substr(0, pos);
+                partial_buffer = partial_buffer.substr(pos + 1);
                 
-                // Simplified: Just accept all counts assuming clients collaborate nicely
-                current_count = received_count + 1;
-                total_counts++;
-                
-                auto now = std::chrono::steady_clock::now();
-                auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_display);
-                
-                if (!fast_mode || elapsed.count() >= 500) {
-                    displayProgress(received_count, now);
-                    last_display = now;
+                // Try to parse as a number
+                try {
+                    int received_count = std::stoi(line);
+                    
+                    // Simplified: Just accept all counts assuming clients collaborate nicely
+                    current_count = received_count + 1;
+                    total_counts++;
+                    
+                    auto now = std::chrono::steady_clock::now();
+                    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_display);
+                    
+                    if (!fast_mode || elapsed.count() >= 500) {
+                        displayProgress(received_count, now);
+                        last_display = now;
+                    }
+                    
+                    if (elapsed.count() < 100 && !fast_mode) {
+                        fast_mode = true;
+                        std::cout << "Switching to fast mode (displaying every 500ms)..." << std::endl;
+                    }
+                    
+                    // Still broadcast to keep all clients in sync
+                    broadcastCount(received_count, student_id);
+                } catch (const std::exception& e) {
+                    // Ignore invalid lines
                 }
-                
-                if (elapsed.count() < 100 && !fast_mode) {
-                    fast_mode = true;
-                    std::cout << "Switching to fast mode (displaying every 500ms)..." << std::endl;
-                }
-                
-                // Still broadcast to keep all clients in sync
-                broadcastCount(received_count, student_id);
             }
         }
         
@@ -153,7 +168,7 @@ public:
     }
     
     void broadcastCount(int count, int from_student) {
-        std::string message = "COUNT:" + std::to_string(count);
+        std::string message = std::to_string(count) + "\n";
         
         std::lock_guard<std::mutex> lock(clients_mutex);
         if (client_sockets.empty()) {

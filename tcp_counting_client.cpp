@@ -100,7 +100,7 @@ public:
     }
     
     void sendCount(int count) {
-        std::string message = "COUNT:" + std::to_string(count);
+        std::string message = std::to_string(count) + "\n";
         ssize_t bytes_sent = send(socket_fd, message.c_str(), message.length(), 0);
         
         if (bytes_sent < 0) {
@@ -113,6 +113,7 @@ public:
     
     void receiveMessages() {
         char buffer[1024];
+        std::string partial_buffer;
         
         while (running) {
             ssize_t bytes_received = recv(socket_fd, buffer, sizeof(buffer) - 1, 0);
@@ -125,13 +126,26 @@ public:
             
             buffer[bytes_received] = '\0';
             
-            // Process count broadcasts from the server
-            if (strncmp(buffer, "COUNT:", 6) == 0) {
-                int received_count = std::atoi(buffer + 6);
-                current_count = received_count + 1;
+            // Add received data to our partial buffer
+            partial_buffer += buffer;
+            
+            // Process complete lines
+            size_t pos;
+            while ((pos = partial_buffer.find('\n')) != std::string::npos) {
+                // Extract line
+                std::string line = partial_buffer.substr(0, pos);
+                partial_buffer = partial_buffer.substr(pos + 1);
                 
-                std::cout << "Received count: " << received_count 
-                          << " (next expected: " << current_count << ")" << std::endl;
+                // Try to parse as a number
+                try {
+                    int received_count = std::stoi(line);
+                    current_count = received_count + 1;
+                    
+                    std::cout << "Received count: " << received_count 
+                              << " (next expected: " << current_count << ")" << std::endl;
+                } catch (const std::exception& e) {
+                    // Ignore invalid lines
+                }
             }
         }
     }
