@@ -214,9 +214,8 @@ public:
                 displayProgress(current_count - 1, now);
             }
             
-            if (current_count > 0) {
-                last_count_time = now;
-            }
+            // Don't reset the last_count_time here - we already set it when we simulate a count
+            // The old code reset the timer unconditionally, which prevented further simulations
         }
     }
     

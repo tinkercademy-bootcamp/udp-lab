@@ -8,6 +8,7 @@
 #include <unistd.h>
 #include <cstring>
 #include <atomic>
+#include <netdb.h>
 
 class TCPCountingClient {
 private:
@@ -39,9 +40,16 @@ public:
         server_addr.sin_family = AF_INET;
         server_addr.sin_port = htons(SERVER_PORT);
         
+        // Try to parse as IP address first
         if (inet_pton(AF_INET, server_ip.c_str(), &server_addr.sin_addr) <= 0) {
-            perror("Invalid address");
-            return false;
+            // Not a valid IP address, try as hostname
+            struct hostent *he = gethostbyname(server_ip.c_str());
+            if (he == nullptr) {
+                perror("Invalid address or hostname");
+                return false;
+            }
+            // Copy the first address
+            memcpy(&server_addr.sin_addr, he->h_addr_list[0], he->h_length);
         }
         
         if (::connect(socket_fd, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
@@ -49,7 +57,7 @@ public:
             return false;
         }
         
-        std::cout << "Connected to server as student " << student_id << std::endl;
+        std::cout << "Connected to server at " << server_ip << " as student " << student_id << std::endl;
         std::cout << "Waiting for my turn (when count % " << total_students << " == " << student_id << ")..." << std::endl;
         
         return true;
@@ -145,12 +153,13 @@ int main(int argc, char* argv[]) {
     if (argc < 3 || argc > 4) {
         std::cout << "Usage: " << argv[0] << " <student_id> <total_students> [hostname]" << std::endl;
         std::cout << "student_id should be between 0 and (total_students-1)" << std::endl;
+        std::cout << "hostname can be either an IP address or hostname (defaults to trainers-in.tnkr.be)" << std::endl;
         return 1;
     }
     
     int student_id = std::atoi(argv[1]);
     int total_students = std::atoi(argv[2]);
-    std::string hostname = (argc == 4) ? argv[3] : "127.0.0.1";
+    std::string hostname = (argc == 4) ? argv[3] : "trainers-in.tnkr.be";
     
     if (student_id < 0 || student_id >= total_students) {
         std::cout << "Error: student_id must be between 0 and " << (total_students-1) << std::endl;
@@ -165,6 +174,7 @@ int main(int argc, char* argv[]) {
     
     std::cout << std::endl << "=== TCP Counting Game ===" << std::endl;
     std::cout << "Student ID: " << student_id << std::endl;
+    std::cout << "Server: " << hostname << std::endl;
     std::cout << "I count when: count % " << total_students << " == " << student_id << std::endl;
     std::cout << "=========================" << std::endl << std::endl;
     
