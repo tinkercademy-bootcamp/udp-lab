@@ -23,6 +23,10 @@ public:
         }
     }
     
+    bool isInSilentMode() const {
+        return silent_mode;
+    }
+    
 private:
     std::string server_ip;
     static const int SERVER_PORT = 35701;
@@ -32,6 +36,8 @@ private:
     int total_students;
     std::atomic<int> current_count{0};
     std::atomic<bool> running{true};
+    std::atomic<int> counts_sent{0};
+    bool silent_mode{false};
 
 public:
     TCPCountingClient(int id, int total, const std::string& ip) 
@@ -110,11 +116,24 @@ public:
         ssize_t bytes_sent = send(socket_fd, message.c_str(), message.length(), 0);
         
         if (bytes_sent < 0) {
-            perror("Send failed");
+            if (!silent_mode) {
+                perror("Send failed");
+            }
             return;
         }
         
-        std::cout << "Sent count: " << count << std::endl;
+        // Increment the count of messages sent by this client
+        int total_sent = ++counts_sent;
+        
+        // Check if we should enter silent mode
+        if (total_sent == 20) {
+            std::cout << "\n...entering silent mode - see instructor's screen for progress" << std::endl;
+            silent_mode = true;
+        }
+        
+        if (!silent_mode) {
+            std::cout << "Sent count: " << count << std::endl;
+        }
     }
     
     void receiveMessages() {
@@ -124,7 +143,7 @@ public:
         while (running) {
             ssize_t bytes_received = recv(socket_fd, buffer, sizeof(buffer) - 1, 0);
             if (bytes_received <= 0) {
-                if (running) {
+                if (running && !silent_mode) {
                     std::cout << "Connection closed by server" << std::endl;
                 }
                 break;
@@ -147,8 +166,10 @@ public:
                     int received_count = std::stoi(line);
                     current_count = received_count + 1;
                     
-                    std::cout << "Received count: " << received_count 
-                              << " (next expected: " << current_count << ")" << std::endl;
+                    if (!silent_mode) {
+                        std::cout << "Received count: " << received_count 
+                                  << " (next expected: " << current_count << ")" << std::endl;
+                    }
                 } catch (const std::exception& e) {
                     // Ignore invalid lines
                 }
@@ -161,7 +182,9 @@ public:
             int count_to_send = current_count;
             
             if ((count_to_send % total_students) == student_id) {
-                std::cout << "My turn! Sending count: " << count_to_send << std::endl;
+                if (!silent_mode) {
+                    std::cout << "My turn! Sending count: " << count_to_send << std::endl;
+                }
                 sendCount(count_to_send);
                 
                 // No need to increment here - will be updated when we receive the broadcast
@@ -178,6 +201,7 @@ public:
         std::thread counting_thread(&TCPCountingClient::countingLoop, this);
         
         std::cout << "Client running. Press Ctrl-C to quit..." << std::endl;
+        std::cout << "Will enter silent mode after sending 20 counts." << std::endl;
         
         // Wait for threads to complete (they'll run until program termination)
         if (receive_thread.joinable()) receive_thread.join();
@@ -193,7 +217,11 @@ TCPCountingClient* g_client_ptr = nullptr;
 
 // Signal handler for graceful shutdown
 void signal_handler(int signal) {
-    std::cout << "\nReceived signal " << signal << ", shutting down..." << std::endl;
+    // Only print if not in silent mode
+    if (g_client_ptr && !g_client_ptr->isInSilentMode()) {
+        std::cout << "\nReceived signal " << signal << ", shutting down..." << std::endl;
+    }
+    
     if (g_client_ptr) {
         g_client_ptr->cleanup();
     }
