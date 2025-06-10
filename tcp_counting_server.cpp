@@ -25,8 +25,10 @@ private:
     
     std::chrono::steady_clock::time_point start_time;
     std::chrono::steady_clock::time_point last_display;
-    std::chrono::steady_clock::time_point last_count_time; // Add shared last count time
+    std::chrono::steady_clock::time_point last_count_time; // Time of the last count
+    std::chrono::steady_clock::time_point last_rate_reset; // Time of the last rate reset
     std::atomic<int> total_counts{0};
+    std::atomic<int> counts_since_last_reset{0}; // Counts since last rate reset
     bool fast_mode = false;
 
 public:
@@ -72,6 +74,8 @@ public:
         start_time = std::chrono::steady_clock::now();
         last_display = start_time;
         last_count_time = start_time;
+        last_rate_reset = start_time;
+        counts_since_last_reset = 0;
         
         return true;
     }
@@ -128,6 +132,7 @@ public:
                     // Simplified: Just accept all counts assuming clients collaborate nicely
                     current_count = received_count + 1;
                     total_counts++;
+                    counts_since_last_reset++;
                     
                     auto now = std::chrono::steady_clock::now();
                     // Update the last count time to prevent timeout
@@ -139,9 +144,16 @@ public:
                         last_display = now;
                     }
                     
+                    // Switch to fast mode if we're getting counts quickly (less than 100ms apart)
                     if (elapsed.count() < 100 && !fast_mode) {
                         fast_mode = true;
                         std::cout << "Switching to fast mode (displaying every 500ms)..." << std::endl;
+                    }
+                    
+                    // Switch back to regular mode if we're getting counts slowly (more than 500ms apart)
+                    if (elapsed.count() > 500 && fast_mode) {
+                        fast_mode = false;
+                        std::cout << "Switching back to regular mode..." << std::endl;
                     }
                     
                     // Still broadcast to keep all clients in sync
@@ -156,17 +168,29 @@ public:
     }
     
     void displayProgress(int count, std::chrono::steady_clock::time_point now) {
-        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - start_time);
-        double seconds = elapsed.count() / 1000.0;
-        double rate = (seconds > 0) ? total_counts / seconds : 0;
+        // Calculate total rate for reference
+        auto total_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - start_time);
+        double total_seconds = total_elapsed.count() / 1000.0;
+        double total_rate = (total_seconds > 0) ? total_counts / total_seconds : 0;
+        
+        // Calculate current rate (since last reset)
+        auto current_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_rate_reset);
+        double current_seconds = current_elapsed.count() / 1000.0;
+        double current_rate = (current_seconds > 0) ? counts_since_last_reset / current_seconds : 0;
+        
+        // Reset the rate counter every 5 seconds to get a more current rate
+        if (current_seconds >= 5.0) {
+            last_rate_reset = now;
+            counts_since_last_reset = 0;
+        }
         
         if (fast_mode) {
             std::cout << "\rCurrent count: " << count 
-                      << " | Rate: " << std::fixed << std::setprecision(1) << rate << " counts/sec    ";
+                      << " | Rate: " << std::fixed << std::setprecision(1) << current_rate << " counts/sec    ";
             std::cout.flush();
         } else {
             std::cout << "Count " << count << " from student " << (count % max_students) 
-                      << " (Rate: " << std::fixed << std::setprecision(1) << rate << " counts/sec)" << std::endl;
+                      << " (Rate: " << std::fixed << std::setprecision(1) << current_rate << " counts/sec)" << std::endl;
         }
     }
     
@@ -224,6 +248,7 @@ public:
                 broadcastCount(current_count);
                 current_count++;
                 total_counts++;
+                counts_since_last_reset++;
                 last_count_time = now; // Update the shared last count time
                 
                 displayProgress(current_count - 1, now);
