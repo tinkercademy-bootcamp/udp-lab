@@ -9,8 +9,20 @@
 #include <cstring>
 #include <atomic>
 #include <netdb.h>
+#include <csignal>
+#include <cstdlib>
 
 class TCPCountingClient {
+public:
+    void cleanup() {
+        running = false;
+        
+        if (socket_fd >= 0) {
+            close(socket_fd);
+            socket_fd = -1;
+        }
+    }
+    
 private:
     std::string server_ip;
     static const int SERVER_PORT = 35701;
@@ -60,14 +72,8 @@ public:
                 continue;
             }
             
-            // Set socket timeout
-            struct timeval tv;
-            tv.tv_sec = 5;  // 5 second timeout
-            tv.tv_usec = 0;
-            if (setsockopt(socket_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
-                perror("Socket timeout option");
-                // Continue anyway
-            }
+            // Don't set a socket timeout - we want the connection to stay open
+            // even when there's no data being received
             
             std::cout << "Connecting to " << server_ip << ":" << SERVER_PORT << "..." << std::endl;
             if (::connect(socket_fd, p->ai_addr, p->ai_addrlen) == -1) {
@@ -119,7 +125,7 @@ public:
             ssize_t bytes_received = recv(socket_fd, buffer, sizeof(buffer) - 1, 0);
             if (bytes_received <= 0) {
                 if (running) {
-                    std::cout << "Connection lost to server" << std::endl;
+                    std::cout << "Connection closed by server" << std::endl;
                 }
                 break;
             }
@@ -171,30 +177,28 @@ public:
         std::thread receive_thread(&TCPCountingClient::receiveMessages, this);
         std::thread counting_thread(&TCPCountingClient::countingLoop, this);
         
-        std::string input;
-        std::cout << "Press 'q' and Enter to quit..." << std::endl;
-        while (std::getline(std::cin, input)) {
-            if (input == "q" || input == "quit") {
-                break;
-            }
-        }
+        std::cout << "Client running. Press Ctrl-C to quit..." << std::endl;
         
-        cleanup();
-        
+        // Wait for threads to complete (they'll run until program termination)
         if (receive_thread.joinable()) receive_thread.join();
         if (counting_thread.joinable()) counting_thread.join();
-    }
-    
-    void cleanup() {
-        running = false;
         
-        if (socket_fd >= 0) {
-            close(socket_fd);
-            socket_fd = -1;
-        }
+        // Note: This point is only reached if a thread exits unexpectedly
+        cleanup();
     }
 };
 
+// Global pointer to client for signal handler
+TCPCountingClient* g_client_ptr = nullptr;
+
+// Signal handler for graceful shutdown
+void signal_handler(int signal) {
+    std::cout << "\nReceived signal " << signal << ", shutting down..." << std::endl;
+    if (g_client_ptr) {
+        g_client_ptr->cleanup();
+    }
+    exit(signal);
+}
 
 int main(int argc, char* argv[]) {
     if (argc < 3 || argc > 4) {
@@ -213,7 +217,12 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     
+    // Set up signal handler for Ctrl-C (SIGINT)
+    std::signal(SIGINT, signal_handler);
+    std::signal(SIGTERM, signal_handler);
+    
     TCPCountingClient client(student_id, total_students, hostname);
+    g_client_ptr = &client;  // Set global pointer for signal handler
     
     if (!client.connect()) {
         return 1;

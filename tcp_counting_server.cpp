@@ -25,6 +25,7 @@ private:
     
     std::chrono::steady_clock::time_point start_time;
     std::chrono::steady_clock::time_point last_display;
+    std::chrono::steady_clock::time_point last_count_time; // Add shared last count time
     std::atomic<int> total_counts{0};
     bool fast_mode = false;
 
@@ -70,6 +71,7 @@ public:
         
         start_time = std::chrono::steady_clock::now();
         last_display = start_time;
+        last_count_time = start_time;
         
         return true;
     }
@@ -90,15 +92,14 @@ public:
             std::lock_guard<std::mutex> lock(clients_mutex);
             client_sockets.push_back(client_socket);
             
-            std::cout << "Student " << (client_sockets.size() - 1) 
-                      << " connected. Total: " << client_sockets.size() 
+            std::cout << "Client connected. Total clients: " << client_sockets.size() 
                       << "/" << max_students << std::endl;
             
-            std::thread(&TCPCountingServer::handleClient, this, client_socket, client_sockets.size() - 1).detach();
+            std::thread(&TCPCountingServer::handleClient, this, client_socket).detach();
         }
     }
     
-    void handleClient(int client_socket, int student_id) {
+    void handleClient(int client_socket) {
         char buffer[1024];
         std::string partial_buffer;
         
@@ -129,6 +130,8 @@ public:
                     total_counts++;
                     
                     auto now = std::chrono::steady_clock::now();
+                    // Update the last count time to prevent timeout
+                    last_count_time = now;
                     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_display);
                     
                     if (!fast_mode || elapsed.count() >= 500) {
@@ -142,7 +145,7 @@ public:
                     }
                     
                     // Still broadcast to keep all clients in sync
-                    broadcastCount(received_count, student_id);
+                    broadcastCount(received_count);
                 } catch (const std::exception& e) {
                     // Ignore invalid lines
                 }
@@ -167,7 +170,7 @@ public:
         }
     }
     
-    void broadcastCount(int count, int from_student) {
+    void broadcastCount(int count) {
         std::string message = std::to_string(count) + "\n";
         
         std::lock_guard<std::mutex> lock(clients_mutex);
@@ -182,7 +185,6 @@ public:
     }
     
     void simulateTimeouts() {
-        auto last_count_time = std::chrono::steady_clock::now();
         bool started = false;
         
         while (running) {
@@ -219,16 +221,15 @@ public:
                           << std::endl;
                 
                 // Broadcast the simulated count, then increment
-                broadcastCount(current_count, expected_student);
+                broadcastCount(current_count);
                 current_count++;
                 total_counts++;
-                last_count_time = now;
+                last_count_time = now; // Update the shared last count time
                 
                 displayProgress(current_count - 1, now);
             }
             
-            // Don't reset the last_count_time here - we already set it when we simulate a count
-            // The old code reset the timer unconditionally, which prevented further simulations
+            // No need to reset the timer here - we update it when we receive or simulate a count
         }
     }
     
