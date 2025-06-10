@@ -11,16 +11,18 @@
 
 class TCPCountingClient {
 private:
-    static const char* SERVER_IP;
+    std::string server_ip;
     static const int SERVER_PORT = 35701;
     
     int socket_fd;
     int student_id;
+    int total_students;
     std::atomic<int> current_count{0};
     std::atomic<bool> running{true};
 
 public:
-    TCPCountingClient(int id) : socket_fd(-1), student_id(id) {}
+    TCPCountingClient(int id, int total, const std::string& ip) 
+        : socket_fd(-1), student_id(id), total_students(total), server_ip(ip) {}
     
     ~TCPCountingClient() {
         cleanup();
@@ -37,7 +39,7 @@ public:
         server_addr.sin_family = AF_INET;
         server_addr.sin_port = htons(SERVER_PORT);
         
-        if (inet_pton(AF_INET, SERVER_IP, &server_addr.sin_addr) <= 0) {
+        if (inet_pton(AF_INET, server_ip.c_str(), &server_addr.sin_addr) <= 0) {
             perror("Invalid address");
             return false;
         }
@@ -48,7 +50,7 @@ public:
         }
         
         std::cout << "Connected to server as student " << student_id << std::endl;
-        std::cout << "Waiting for my turn (when count % 13 == " << student_id << ")..." << std::endl;
+        std::cout << "Waiting for my turn (when count % " << total_students << " == " << student_id << ")..." << std::endl;
         
         return true;
     }
@@ -99,7 +101,7 @@ public:
         while (running) {
             int count_to_send = current_count;
             
-            if ((count_to_send % 13) == student_id) {
+            if ((count_to_send % total_students) == student_id) {
                 std::cout << "My turn! Sending count: " << count_to_send << std::endl;
                 sendCount(count_to_send);
                 
@@ -138,22 +140,24 @@ public:
     }
 };
 
-const char* TCPCountingClient::SERVER_IP = "127.0.0.1";
 
 int main(int argc, char* argv[]) {
-    if (argc != 2) {
-        std::cout << "Usage: " << argv[0] << " <student_id>" << std::endl;
-        std::cout << "student_id should be between 0 and 12" << std::endl;
+    if (argc < 3 || argc > 4) {
+        std::cout << "Usage: " << argv[0] << " <student_id> <total_students> [hostname]" << std::endl;
+        std::cout << "student_id should be between 0 and (total_students-1)" << std::endl;
         return 1;
     }
     
     int student_id = std::atoi(argv[1]);
-    if (student_id < 0 || student_id > 12) {
-        std::cout << "Error: student_id must be between 0 and 12" << std::endl;
+    int total_students = std::atoi(argv[2]);
+    std::string hostname = (argc == 4) ? argv[3] : "127.0.0.1";
+    
+    if (student_id < 0 || student_id >= total_students) {
+        std::cout << "Error: student_id must be between 0 and " << (total_students-1) << std::endl;
         return 1;
     }
     
-    TCPCountingClient client(student_id);
+    TCPCountingClient client(student_id, total_students, hostname);
     
     if (!client.connect()) {
         return 1;
@@ -161,7 +165,7 @@ int main(int argc, char* argv[]) {
     
     std::cout << std::endl << "=== TCP Counting Game ===" << std::endl;
     std::cout << "Student ID: " << student_id << std::endl;
-    std::cout << "I count when: count % 13 == " << student_id << std::endl;
+    std::cout << "I count when: count % " << total_students << " == " << student_id << std::endl;
     std::cout << "=========================" << std::endl << std::endl;
     
     client.run();

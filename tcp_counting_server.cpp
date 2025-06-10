@@ -3,16 +3,19 @@
 #include <thread>
 #include <mutex>
 #include <chrono>
+#include <iomanip>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <unistd.h>
 #include <cstring>
 #include <atomic>
+#include <csignal>
+#include <cstdlib>
 
 class TCPCountingServer {
 private:
     static const int PORT = 35701;
-    static const int MAX_STUDENTS = 13;
+    int max_students;
     
     int server_fd;
     std::vector<int> client_sockets;
@@ -26,8 +29,8 @@ private:
     bool fast_mode = false;
 
 public:
-    TCPCountingServer() : server_fd(-1) {
-        client_sockets.reserve(MAX_STUDENTS);
+    TCPCountingServer(int students = 13) : server_fd(-1), max_students(students) {
+        client_sockets.reserve(max_students);
     }
     
     ~TCPCountingServer() {
@@ -57,7 +60,7 @@ public:
             return false;
         }
         
-        if (listen(server_fd, MAX_STUDENTS) < 0) {
+        if (listen(server_fd, max_students) < 0) {
             perror("Listen failed");
             return false;
         }
@@ -72,7 +75,7 @@ public:
     }
     
     void acceptClients() {
-        while (running && client_sockets.size() < MAX_STUDENTS) {
+        while (running && client_sockets.size() < max_students) {
             struct sockaddr_in client_addr;
             socklen_t addr_len = sizeof(client_addr);
             
@@ -89,7 +92,7 @@ public:
             
             std::cout << "Student " << (client_sockets.size() - 1) 
                       << " connected. Total: " << client_sockets.size() 
-                      << "/" << MAX_STUDENTS << std::endl;
+                      << "/" << max_students << std::endl;
             
             std::thread(&TCPCountingServer::handleClient, this, client_socket, client_sockets.size() - 1).detach();
         }
@@ -109,7 +112,7 @@ public:
             if (strncmp(buffer, "COUNT:", 6) == 0) {
                 int received_count = std::atoi(buffer + 6);
                 
-                if (received_count == current_count && (received_count % MAX_STUDENTS) == student_id) {
+                if (received_count == current_count && (received_count % max_students) == student_id) {
                     current_count++;
                     total_counts++;
                     
@@ -147,7 +150,7 @@ public:
                       << " | Rate: " << std::fixed << std::setprecision(1) << rate << " counts/sec    ";
             std::cout.flush();
         } else {
-            std::cout << "Count " << count << " from student " << (count % MAX_STUDENTS) 
+            std::cout << "Count " << count << " from student " << (count % max_students) 
                       << " (Rate: " << std::fixed << std::setprecision(1) << rate << " counts/sec)" << std::endl;
         }
     }
@@ -156,6 +159,11 @@ public:
         std::string message = "ACCEPTED:" + std::to_string(count);
         
         std::lock_guard<std::mutex> lock(clients_mutex);
+        if (client_sockets.empty()) {
+            // No clients to broadcast to, but we still need to update the state
+            return;
+        }
+        
         for (int socket : client_sockets) {
             send(socket, message.c_str(), message.length(), 0);
         }
@@ -163,6 +171,7 @@ public:
     
     void simulateTimeouts() {
         auto last_count_time = std::chrono::steady_clock::now();
+        bool started = false;
         
         while (running) {
             std::this_thread::sleep_for(std::chrono::milliseconds(500));
@@ -170,24 +179,43 @@ public:
             auto now = std::chrono::steady_clock::now();
             auto since_last = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_count_time);
             
-            if (since_last.count() > 1000 && client_sockets.size() > 0) {
-                int expected_student = current_count % MAX_STUDENTS;
-                
-                if (expected_student < static_cast<int>(client_sockets.size())) {
-                    std::cout << std::endl << "Timeout! Simulating count " << current_count 
-                              << " for student " << expected_student << std::endl;
-                    
-                    broadcastCount(current_count, expected_student);
-                    current_count++;
-                    total_counts++;
-                    last_count_time = now;
-                    
-                    displayProgress(current_count - 1, now);
+            // Wait 5 seconds before starting the simulation if no one connects
+            if (!started && client_sockets.size() == 0) {
+                auto since_start = std::chrono::duration_cast<std::chrono::seconds>(now - start_time);
+                if (since_start.count() > 5) {
+                    std::cout << "No students connected after 5 seconds. Starting simulation..." << std::endl;
+                    started = true;
                 }
             }
             
+            // Simulate counts after a timeout
+            if ((since_last.count() > 1000 && client_sockets.size() > 0) || 
+                (started && client_sockets.size() == 0 && since_last.count() > 1000)) {
+                int expected_student = current_count % max_students;
+                
+                // Check if the expected student is connected
+                bool student_connected = false;
+                {
+                    std::lock_guard<std::mutex> lock(clients_mutex);
+                    student_connected = expected_student < static_cast<int>(client_sockets.size());
+                }
+                
+                // Either the student is connected but timed out, or the student isn't connected at all
+                std::cout << std::endl << "Timeout! Simulating count " << current_count 
+                          << " for student " << expected_student 
+                          << (student_connected ? " (connected but timed out)" : " (not connected)") 
+                          << std::endl;
+                
+                broadcastCount(current_count, expected_student);
+                current_count++;
+                total_counts++;
+                last_count_time = now;
+                
+                displayProgress(current_count - 1, now);
+            }
+            
             if (current_count > 0) {
-                last_count_time = std::chrono::steady_clock::now();
+                last_count_time = now;
             }
         }
     }
@@ -196,20 +224,17 @@ public:
         std::thread accept_thread(&TCPCountingServer::acceptClients, this);
         std::thread timeout_thread(&TCPCountingServer::simulateTimeouts, this);
         
-        std::string input;
-        std::cout << "Press 'q' and Enter to quit..." << std::endl;
-        while (std::getline(std::cin, input)) {
-            if (input == "q" || input == "quit") {
-                break;
-            }
-        }
+        std::cout << "Server running. Press Ctrl-C to quit..." << std::endl;
         
-        cleanup();
-        
+        // Wait for threads to complete (they'll run until program termination)
         if (accept_thread.joinable()) accept_thread.join();
         if (timeout_thread.joinable()) timeout_thread.join();
+        
+        // Note: This point is only reached if a thread exits unexpectedly
+        cleanup();
     }
     
+public:
     void cleanup() {
         running = false;
         
@@ -226,8 +251,36 @@ public:
     }
 };
 
-int main() {
-    TCPCountingServer server;
+// Global pointer to server for signal handler
+TCPCountingServer* g_server_ptr = nullptr;
+
+// Signal handler for graceful shutdown
+void signal_handler(int signal) {
+    std::cout << "\nReceived signal " << signal << ", shutting down..." << std::endl;
+    if (g_server_ptr) {
+        g_server_ptr->cleanup();
+    }
+    exit(signal);
+}
+
+int main(int argc, char* argv[]) {
+    int students = 13;  // Default value
+    
+    if (argc > 1) {
+        students = std::atoi(argv[1]);
+        if (students <= 0) {
+            std::cout << "Error: number of students must be positive" << std::endl;
+            return 1;
+        }
+    }
+    
+    // Set up signal handler for Ctrl-C (SIGINT)
+    std::signal(SIGINT, signal_handler);
+    std::signal(SIGTERM, signal_handler);
+    
+    std::cout << "Starting TCP Counting Server with " << students << " students" << std::endl;
+    TCPCountingServer server(students);
+    g_server_ptr = &server;  // Set global pointer for signal handler
     
     if (!server.start()) {
         return 1;
