@@ -1,3 +1,4 @@
+.vscode
 tcp_counting_client
 tcp_counting_server
 udp_counting_peer
