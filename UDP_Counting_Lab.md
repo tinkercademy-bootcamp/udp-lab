@@ -1,5 +1,5 @@
 # UDP Multicast Counting Lab
-*HFT Developer Bootcamp - Network Programming Module*
+*Tinkercademy Bootcamp Summer 2025*
 
 ## Overview
 
@@ -19,6 +19,7 @@ This lab introduces UDP multicast communication through a collaborative counting
 - Students have sudo access for package installation
 - Each student assigned unique ID (0-12)
 - Shared multicast group: `239.255.1.1:36702`
+- Before starting, skim through this [Cloudflare primer on TCP vs UDP](https://www.cloudflare.com/en-gb/learning/ddos/glossary/user-datagram-protocol-udp/) and pay particular attention to the TCP Handshake diagram
 
 ---
 
@@ -89,10 +90,10 @@ echo "Lost message" | socat - UDP-DATAGRAM:192.168.1.99:9999
 
 ---
 
-## Phase 2: Multicast Discovery
+## Phase 2: Multicast on the Command Line
 
 ### Objective
-Experience multicast group communication within the VPC.
+Experience multicast group communication within the VPC. Note that 239.255.1.1 is the only multicast group that is configured to work in your AWS VPC. Because AWS VPCs are not true local networks, we had to configure an AWS Transit Gateway to simulate the multicast support in a local network.
 
 ### Exercise 2.1: Join Multicast Group
 
@@ -126,108 +127,81 @@ done
 ```
 - `$(date '+%H:%M:%S.%3N')`: Current timestamp with milliseconds
 - Replace "Student X" with your actual student ID
+- Try and see whether any messages are dropped or received out of order (though it will probably be too rare to spot)
 
 ---
 
-## Phase 3: TCP Counting Game (Baseline)
+## Phase 3: TCP Counting Game
 
-### Objective
-Implement reliable centralized counting for performance comparison.
+We'll play the counting game over TCP first, before getting around to UDP in Phase 4. This is inspired by discord counting, except it's truly dumb counting - only numbers allowed - don't expect 2^4 to come after 3*5.
 
-### Server Code (Instructor runs)
-The instructor will run a TCP server that coordinates turns.
+### Exercise 3.1: TCP Counting Game via telnet
 
-### Student Implementation
-Each student compiles and runs the TCP client:
-
+The instructor will compile and run `tcp_counting_server.cpp` and present this on the screen.
 ```bash
-g++ -o tcp_counter tcp_counting_client.cpp
-./tcp_counter <student_id>
+g++ -o tcp_counting_server tcp_counting_server.cpp
+./tcp_counting_server 13 # for 13 students
 ```
 
-Where `<student_id>` is your assigned number (0-12).
+Students should number off from 0 to find out their id.
 
-### Expected Behavior
-- Students connect to central server
-- Server coordinates turns in round-robin fashion
-- Only the student whose turn it is can send the next number
-- Count progresses: 0, 1, 2, 3, ... with student_id = count % 13
+Each student should connect to the counting server on port 35701 using telnet
+```bash
+telnet trainers-in.tnkr.be 35701
+```
 
-### Performance Measurement
-Time how long it takes to reach count = 1000.
+Each student should type in next number if it's their turn (i.e. the next number module total students is equal to their id).
+
+### Exercise 3.2: TCP Counting Game in code
+
+Now, for faster counting students should compile and run `tcp_counting_client.cpp`
+```bash
+g++ -o tcp_counting_client tcp_counting_client.cpp
+./tcp_counting_client # see the usage instructions for providing id and total students
+```
+
+After all students have connected and the counts are increasing steadily, take note of how fast the numbers are increasing.
+
+Discuss what the bottlenecks are.
 
 ---
 
 ## Phase 4: UDP Multicast Counting Game
 
-### Objective
-Implement distributed counting with multicast UDP.
+Now we'll do the same in UDP
 
-### Compilation
+### Exercise 4.1 UDP Multicast Chat
+
+Before getting to counting, let's try out the simple chat client in `udp_multicast_example.cpp`
+
 ```bash
-g++ -o udp_counter udp_counting_client.cpp
-./udp_counter <student_id>
+g++ -o udp_multicast_example udp_multicast_example
+./udp_multicast_example
 ```
 
-### Protocol Rules
-1. Listen on multicast group `239.255.1.1:36702`
-2. Send next number only when `current_count % 13 == your_student_id`
-3. Message format: `"COUNT:<number>"`
-4. Start with count = 0
+### Exercise 4.2 Write your own UDP Counting Peer
 
-### Expected Challenges
-- Race conditions when multiple students send simultaneously
-- Packet loss causing stuck counts
-- Messages arriving out of order
-- No central coordination
-
-### Simulation During Development
-While other students finish coding, simulate their messages:
+The instructor will run `udp_counting_presenter.cpp` and keep it presenting on screen.
 ```bash
-# Simulate student 7 sending count 7
-echo "COUNT:7" | socat STDIN UDP4-DATAGRAM:239.255.1.1:36702
-
-# Simulate rapid counting
-for i in {0..25}; do
-  echo "COUNT:$i" | socat STDIN UDP4-DATAGRAM:239.255.1.1:36702
-  sleep 0.1
-done
-```
-- `COUNT:X`: Message format expected by the counting program
-- `sleep 0.1`: Pause 100ms between messages to simulate realistic timing
-
-### Performance Comparison
-- Time to reach count = 1000 compared to TCP version
-- Observe counts/second rate
-- Note any stuck or skipped numbers
-
----
-
-## Troubleshooting Commands
-
-### Check Multicast Route
-```bash
-ip route show | grep 239
+g++ -o udp_counting_presenter udp_counting_presenter.cpp
+./udp_counting_presenter 13 # for 13 students
 ```
 
-### Monitor Network Traffic
-```bash
-sudo tcpdump -i any host 239.255.1.1
-```
-- `-i any`: Listen on all interfaces
-- `host 239.255.1.1`: Filter multicast traffic
+If time permits, the instructor will ask you to reference `udp_multicast_example.cpp` and write your own UDP Counting Peer.
 
-### Test Multicast Connectivity
+Otherwise, you'll be asked to just run the sample
 ```bash
-ping 239.255.1.1
+g++ -o udp_counting_peer udp_counting_peer.cpp
+./udp_counting_peer # see the usage instructions for providing id and total students
 ```
-Note: May not work depending on system configuration.
+
+See how fast it is.
 
 ---
 
 ## Debrief Questions
 
-1. **Latency Comparison:** Which version (TCP vs UDP) reached 1000 faster? Why?
+1. **Latency Comparison:** Which version (TCP vs UDP) was faster? Why?
 
 2. **Reliability Issues:** What problems did you observe with UDP multicast?
    - Lost packets?
@@ -262,5 +236,3 @@ Note: May not work depending on system configuration.
 - Gap detection and retransmission requests
 - Redundant feeds from multiple sources
 - Local sequence number validation
-
-This lab simulates these concepts at a manageable scale, giving you hands-on experience with the fundamental trade-offs in HFT system design.
