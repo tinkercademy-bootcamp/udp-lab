@@ -11,11 +11,13 @@
 #include <atomic>
 #include <csignal>
 #include <cstdlib>
+#include <algorithm>
 
 class TCPCountingServer {
 private:
     static const int PORT = 35701;
     int max_students;
+    int max_connections;
     
     int server_fd;
     std::vector<int> client_sockets;
@@ -32,8 +34,8 @@ private:
     bool fast_mode = false;
 
 public:
-    TCPCountingServer(int students = 13) : server_fd(-1), max_students(students) {
-        client_sockets.reserve(max_students);
+    TCPCountingServer(int students = 13) : server_fd(-1), max_students(students), max_connections(students * 3) {
+        client_sockets.reserve(max_connections);
     }
     
     ~TCPCountingServer() {
@@ -63,7 +65,7 @@ public:
             return false;
         }
         
-        if (listen(server_fd, max_students) < 0) {
+        if (listen(server_fd, max_connections) < 0) {
             perror("Listen failed");
             return false;
         }
@@ -81,7 +83,7 @@ public:
     }
     
     void acceptClients() {
-        while (running && client_sockets.size() < max_students) {
+        while (running && client_sockets.size() < max_connections) {
             struct sockaddr_in client_addr;
             socklen_t addr_len = sizeof(client_addr);
             
@@ -96,8 +98,8 @@ public:
             std::lock_guard<std::mutex> lock(clients_mutex);
             client_sockets.push_back(client_socket);
             
-            std::cout << "Client connected. Total clients: " << client_sockets.size() 
-                      << "/" << max_students << std::endl;
+            std::cout << "\nClient connected. Total clients: " << client_sockets.size() 
+                      << "/" << max_connections << std::endl;
             
             std::thread(&TCPCountingServer::handleClient, this, client_socket).detach();
         }
@@ -110,6 +112,8 @@ public:
         while (running) {
             ssize_t bytes_received = recv(client_socket, buffer, sizeof(buffer) - 1, 0);
             if (bytes_received <= 0) {
+                // Client disconnected or error occurred
+                removeClient(client_socket);
                 break;
             }
             
@@ -129,7 +133,6 @@ public:
                 try {
                     int received_count = std::stoi(line);
                     
-                    // Simplified: Just accept all counts assuming clients collaborate nicely
                     current_count = received_count + 1;
                     total_counts++;
                     counts_since_last_reset++;
@@ -144,18 +147,6 @@ public:
                         last_display = now;
                     }
                     
-                    // Switch to fast mode if we're getting counts quickly (less than 100ms apart)
-                    if (elapsed.count() < 100 && !fast_mode) {
-                        fast_mode = true;
-                        std::cout << "Switching to fast mode (displaying every 500ms)..." << std::endl;
-                    }
-                    
-                    // Switch back to regular mode if we're getting counts slowly (more than 500ms apart)
-                    if (elapsed.count() > 500 && fast_mode) {
-                        fast_mode = false;
-                        std::cout << "Switching back to regular mode..." << std::endl;
-                    }
-                    
                     // Still broadcast to keep all clients in sync
                     broadcastCount(received_count);
                 } catch (const std::exception& e) {
@@ -164,10 +155,10 @@ public:
             }
         }
         
-        close(client_socket);
+        // Socket is closed in removeClient
     }
     
-    void displayProgress(int count, std::chrono::steady_clock::time_point now) {
+    void displayProgress(int count, std::chrono::steady_clock::time_point now, bool timeout = false) {
         // Calculate total rate for reference
         auto total_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - start_time);
         double total_seconds = total_elapsed.count() / 1000.0;
@@ -175,22 +166,38 @@ public:
         
         // Calculate current rate (since last reset)
         auto current_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_rate_reset);
-        double current_seconds = current_elapsed.count() / 1000.0;
-        double current_rate = (current_seconds > 0) ? counts_since_last_reset / current_seconds : 0;
-        
-        // Reset the rate counter every 5 seconds to get a more current rate
-        if (current_seconds >= 5.0) {
-            last_rate_reset = now;
-            counts_since_last_reset = 0;
-        }
+        double current_milliseconds = current_elapsed.count();
+        double current_rate = (current_milliseconds > 0) ? counts_since_last_reset / current_milliseconds : 0;
         
         if (fast_mode) {
             std::cout << "\rCurrent count: " << count 
-                      << " | Rate: " << std::fixed << std::setprecision(1) << current_rate << " counts/sec    ";
+                      << " | Rate: " << std::fixed << std::setprecision(3) << current_rate << " counts/ms    ";
             std::cout.flush();
-        } else {
-            std::cout << "Count " << count << " from student " << (count % max_students) 
-                      << " (Rate: " << std::fixed << std::setprecision(1) << current_rate << " counts/sec)" << std::endl;
+            // reset the rate counter on every display
+            last_rate_reset = now;
+            counts_since_last_reset = 0;
+        } else {            
+            std::cout << (timeout ? "\n[timeout] " : "\n") << "Count " << count << " from student " << (count % max_students);
+            std::cout.flush();
+
+            // reset the rate counter only after a full round of counts
+            if (count % max_students == 0 && current_milliseconds > 2000) {
+                last_rate_reset = now;
+                counts_since_last_reset = 0;
+            }
+        }
+
+        fast_mode = current_rate > 5.0;
+    }
+    
+    void removeClient(int client_socket) {
+        std::lock_guard<std::mutex> lock(clients_mutex);
+        auto it = std::find(client_sockets.begin(), client_sockets.end(), client_socket);
+        if (it != client_sockets.end()) {
+            client_sockets.erase(it);
+            close(client_socket);
+            std::cout << "\nClient disconnected. Total clients: " << client_sockets.size() 
+                      << std::endl;
         }
     }
     
@@ -203,8 +210,19 @@ public:
             return;
         }
         
-        for (int socket : client_sockets) {
-            send(socket, message.c_str(), message.length(), 0);
+        // Use iterator to safely remove failed sockets during broadcast
+        auto it = client_sockets.begin();
+        while (it != client_sockets.end()) {
+            ssize_t result = send(*it, message.c_str(), message.length(), MSG_NOSIGNAL);
+            if (result < 0) {
+                // Send failed, client likely disconnected
+                close(*it);
+                it = client_sockets.erase(it);
+                std::cout << "\nClient disconnected during broadcast. Total clients: " 
+                          << client_sockets.size() << "/" << max_connections << std::endl;
+            } else {
+                ++it;
+            }
         }
     }
     
@@ -230,20 +248,7 @@ public:
             if ((since_last.count() > 5000 && client_sockets.size() > 0) || 
                 (started && client_sockets.size() == 0 && since_last.count() > 5000)) {
                 int expected_student = current_count % max_students;
-                
-                // Check if the expected student is connected
-                bool student_connected = false;
-                {
-                    std::lock_guard<std::mutex> lock(clients_mutex);
-                    student_connected = expected_student < static_cast<int>(client_sockets.size());
-                }
-                
-                // Either the student is connected but timed out, or the student isn't connected at all
-                std::cout << std::endl << "5-second timeout! Simulating count " << current_count 
-                          << " for student " << expected_student 
-                          << (student_connected ? " (connected but timed out)" : " (not connected)") 
-                          << std::endl;
-                
+                                
                 // Broadcast the simulated count, then increment
                 broadcastCount(current_count);
                 current_count++;
@@ -251,7 +256,7 @@ public:
                 counts_since_last_reset++;
                 last_count_time = now; // Update the shared last count time
                 
-                displayProgress(current_count - 1, now);
+                displayProgress(current_count - 1, now, true);
             }
             
             // No need to reset the timer here - we update it when we receive or simulate a count
@@ -302,14 +307,15 @@ void signal_handler(int signal) {
 }
 
 int main(int argc, char* argv[]) {
-    int students = 13;  // Default value
+    if (argc != 2) {
+        std::cout << "Usage: " << argv[0] << " <total_students>" << std::endl;
+        return 1;
+    }
     
-    if (argc > 1) {
-        students = std::atoi(argv[1]);
-        if (students <= 0) {
-            std::cout << "Error: number of students must be positive" << std::endl;
-            return 1;
-        }
+    int students = std::atoi(argv[1]);
+    if (students <= 0) {
+        std::cout << "Error: number of students must be positive" << std::endl;
+        return 1;
     }
     
     // Set up signal handler for Ctrl-C (SIGINT)
