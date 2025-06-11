@@ -187,7 +187,7 @@ public:
             }
         }
 
-        fast_mode = current_rate > 5.0;
+        fast_mode = current_rate > 0.05;
     }
     
     void removeClient(int client_socket) {
