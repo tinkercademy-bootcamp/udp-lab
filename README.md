@@ -5,21 +5,24 @@
 
 This lab introduces UDP multicast communication through a collaborative counting exercise. Students will progress from basic UDP concepts to implementing a distributed counting game that simulates real-world HFT market data scenarios.
 
-## Learning Objectives
+### Pre-reading
+Before starting, skim through this [Cloudflare primer on TCP vs UDP](https://www.cloudflare.com/en-gb/learning/ddos/glossary/user-datagram-protocol-udp/) and pay particular attention to the TCP Handshake diagram
+
+
+### Learning Objectives
 
 - Understand UDP vs TCP trade-offs in high-frequency systems
 - Learn multicast group communication principles
 - Experience packet loss, ordering, and timing issues firsthand
 - Apply knowledge to HFT-relevant scenarios (market data feeds)
 
-## Lab Environment
+### Lab Environment
 
 - Ubuntu AWS instances on shared VPC subnet
 - Your AWS Security Group is configured to allow UDP on ports 36xxx
 - Students have sudo access for package installation
 - Each student assigned unique ID (0-12)
 - Shared multicast group: `239.255.1.1:36702`
-- Before starting, skim through this [Cloudflare primer on TCP vs UDP](https://www.cloudflare.com/en-gb/learning/ddos/glossary/user-datagram-protocol-udp/) and pay particular attention to the TCP Handshake diagram
 
 ---
 
@@ -175,7 +178,7 @@ Now we'll do the same in UDP
 Before getting to counting, let's try out the simple chat client in `udp_multicast_example.cpp`
 
 ```bash
-g++ -o udp_multicast_example udp_multicast_example
+g++ -o udp_multicast_example udp_multicast_example.cpp
 ./udp_multicast_example
 ```
 
